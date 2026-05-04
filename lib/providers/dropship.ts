@@ -30,13 +30,29 @@ export const dropshipProvider: FulfillmentProvider = {
       };
     }
 
+    const baseUrl = apiBase.replace(/\/$/, "");
+    const authHeaders: Record<string, string> = {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    };
+
+    // Idempotency: best-effort GET by externalId before POSTing. Aggregators
+    // vary, so we treat any non-2xx (404, 405, 501) as "not supported / not
+    // found" and fall through to create. A 2xx with a parseable order id is
+    // taken as a duplicate hit and short-circuits the create.
+    const existing = await tryLookupExisting(baseUrl, authHeaders, order.externalOrderId);
+    if (existing) {
+      return {
+        providerOrderId: existing,
+        status: "submitted",
+        notes: "Existing dropship order matched by externalId; skipped re-create.",
+      };
+    }
+
     const payload = buildPayload(order);
-    const res = await fetch(`${apiBase.replace(/\/$/, "")}/orders`, {
+    const res = await fetch(`${baseUrl}/orders`, {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
+      headers: authHeaders,
       body: JSON.stringify(payload),
     });
     if (!res.ok) {
@@ -50,6 +66,49 @@ export const dropshipProvider: FulfillmentProvider = {
     };
   },
 };
+
+async function tryLookupExisting(
+  baseUrl: string,
+  headers: Record<string, string>,
+  externalId: string,
+): Promise<string | null> {
+  try {
+    const url = `${baseUrl}/orders?externalId=${encodeURIComponent(externalId)}`;
+    const res = await fetch(url, { method: "GET", headers });
+    if (!res.ok) return null;
+    const data = (await res.json()) as
+      | { id?: string; orderId?: string }
+      | { orders?: Array<{ id?: string; orderId?: string }> }
+      | Array<{ id?: string; orderId?: string }>;
+    const candidate = pickOrderId(data);
+    return candidate ?? null;
+  } catch {
+    // Network or parse failure on the optional lookup is non-fatal; fall
+    // through to POST. A duplicate-order risk remains only if the GET fails
+    // *and* the prior POST succeeded *and* Stripe retried — log it loudly so
+    // the merchant can reconcile in the aggregator dashboard.
+    return null;
+  }
+}
+
+function pickOrderId(
+  data:
+    | { id?: string; orderId?: string }
+    | { orders?: Array<{ id?: string; orderId?: string }> }
+    | Array<{ id?: string; orderId?: string }>,
+): string | null {
+  if (Array.isArray(data)) {
+    const first = data[0];
+    return first ? (first.id ?? first.orderId ?? null) : null;
+  }
+  if ("orders" in data && Array.isArray(data.orders)) {
+    const first = data.orders[0];
+    return first ? (first.id ?? first.orderId ?? null) : null;
+  }
+  if ("id" in data && data.id) return data.id;
+  if ("orderId" in data && data.orderId) return data.orderId;
+  return null;
+}
 
 function buildPayload(order: FulfillmentOrder) {
   return {

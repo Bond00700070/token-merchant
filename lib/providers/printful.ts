@@ -41,6 +41,38 @@ export const printfulProvider: FulfillmentProvider = {
       };
     }
 
+    const storeId = process.env.PRINTFUL_STORE_ID;
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    };
+    if (storeId) headers["X-PF-Store-Id"] = storeId;
+
+    // Idempotency: Printful exposes `GET /orders/@<external_id>` which returns
+    // an existing order by the external_id we set. If the same Stripe webhook
+    // is retried after a partial multi-provider failure, we short-circuit here
+    // instead of creating a duplicate physical order.
+    const lookupRes = await fetch(
+      `${PRINTFUL_API}/orders/@${encodeURIComponent(order.externalOrderId)}`,
+      { method: "GET", headers },
+    );
+    if (lookupRes.ok) {
+      const existing = (await lookupRes.json()) as { result?: { id: number } };
+      const existingId = existing.result?.id;
+      if (existingId !== undefined) {
+        return {
+          providerOrderId: String(existingId),
+          status: "submitted",
+          notes: "Existing Printful order matched by external_id; skipped re-create.",
+        };
+      }
+    } else if (lookupRes.status !== 404) {
+      const text = await lookupRes.text();
+      throw new Error(
+        `Printful idempotency lookup failed: ${lookupRes.status} ${text}`,
+      );
+    }
+
     const payload: PrintfulOrderPayload = {
       external_id: order.externalOrderId,
       recipient: {
@@ -65,13 +97,6 @@ export const printfulProvider: FulfillmentProvider = {
         return { external_variant_id: providerId, quantity: item.quantity };
       }),
     };
-
-    const storeId = process.env.PRINTFUL_STORE_ID;
-    const headers: Record<string, string> = {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    };
-    if (storeId) headers["X-PF-Store-Id"] = storeId;
 
     const res = await fetch(`${PRINTFUL_API}/orders`, {
       method: "POST",
