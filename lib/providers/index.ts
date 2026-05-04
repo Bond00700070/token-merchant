@@ -9,9 +9,11 @@
  * `getProvider`.
  */
 
-import type { Product } from "@/lib/products";
+import type { Product, ProviderName } from "@/lib/products";
 import { printfulProvider } from "@/lib/providers/printful";
 import { dropshipProvider } from "@/lib/providers/dropship";
+
+export type { ProviderName };
 
 export type ShippingAddress = {
   name: string;
@@ -43,11 +45,11 @@ export type FulfillmentResult = {
 };
 
 export interface FulfillmentProvider {
-  readonly name: "printful" | "dropship";
+  readonly name: ProviderName;
   submitOrder(order: FulfillmentOrder): Promise<FulfillmentResult>;
 }
 
-export function getProvider(name: "printful" | "dropship"): FulfillmentProvider {
+export function getProvider(name: ProviderName): FulfillmentProvider {
   switch (name) {
     case "printful":
       return printfulProvider;
@@ -56,9 +58,12 @@ export function getProvider(name: "printful" | "dropship"): FulfillmentProvider 
   }
 }
 
+/**
+ * Fallback provider when no per-product provider is known. Use sparingly —
+ * the webhook now resolves providers per product (see `groupByProvider`),
+ * so this only kicks in for legacy/manual flows.
+ */
 export function defaultProvider(): FulfillmentProvider {
-  const name = (process.env.FULFILLMENT_DEFAULT_PROVIDER ?? "printful") as
-    | "printful"
-    | "dropship";
+  const name = (process.env.FULFILLMENT_DEFAULT_PROVIDER ?? "printful") as ProviderName;
   return getProvider(name);
 }

@@ -1,7 +1,13 @@
 import { NextResponse } from "next/server";
 import type Stripe from "stripe";
 import { getProduct } from "@/lib/products";
-import { defaultProvider, type FulfillmentLineItem, type ShippingAddress } from "@/lib/providers";
+import {
+  getProvider,
+  type FulfillmentLineItem,
+  type FulfillmentResult,
+  type ProviderName,
+  type ShippingAddress,
+} from "@/lib/providers";
 import { getStripe } from "@/lib/stripe";
 
 export const runtime = "nodejs";
@@ -89,28 +95,80 @@ export async function POST(req: Request) {
     country: address.country ?? "",
   };
 
-  const provider = defaultProvider();
-  try {
-    const result = await provider.submitOrder({
-      externalOrderId: session.id,
-      items,
-      shipping: shippingAddress,
-    });
-    return NextResponse.json({
-      received: true,
-      provider: provider.name,
-      providerOrderId: result.providerOrderId,
-      status: result.status,
-      notes: result.notes,
-    });
-  } catch (err) {
-    // Returning 500 here makes Stripe retry, which is what we want for transient
-    // provider failures.
+  // Group items by their fulfillment provider so each provider receives only
+  // the items it can fulfill. A cart can mix POD and dropship products in the
+  // same Stripe order; without grouping, the wrong provider would receive
+  // SKUs it can't fulfill.
+  const groups = groupByProvider(items);
+
+  const submissions = await Promise.allSettled(
+    Array.from(groups.entries()).map(async ([providerName, groupItems]) => {
+      const provider = getProvider(providerName);
+      // Suffix the external order ID per-provider so a single Stripe session
+      // never collides with itself across providers.
+      const externalOrderId =
+        groups.size > 1 ? `${session.id}__${providerName}` : session.id;
+      const result = await provider.submitOrder({
+        externalOrderId,
+        items: groupItems,
+        shipping: shippingAddress,
+      });
+      return { providerName, result };
+    }),
+  );
+
+  const successes: Array<{ provider: ProviderName; result: FulfillmentResult }> = [];
+  const failures: Array<{ provider: ProviderName; error: string }> = [];
+  for (const [index, settled] of submissions.entries()) {
+    const providerName = Array.from(groups.keys())[index]!;
+    if (settled.status === "fulfilled") {
+      successes.push({
+        provider: providerName,
+        result: settled.value.result,
+      });
+    } else {
+      const reason = settled.reason;
+      failures.push({
+        provider: providerName,
+        error: reason instanceof Error ? reason.message : String(reason),
+      });
+    }
+  }
+
+  if (failures.length > 0) {
+    // Return 500 so Stripe retries the webhook. Idempotent providers will
+    // dedupe on `externalOrderId`; non-idempotent providers should expose a
+    // dashboard for manual reconciliation of duplicate orders.
     return NextResponse.json(
       {
-        error: err instanceof Error ? err.message : "Fulfillment failed",
+        received: true,
+        fulfilled: successes,
+        failed: failures,
+        error: `Partial fulfillment failure: ${failures
+          .map((f) => `${f.provider}: ${f.error}`)
+          .join("; ")}`,
       },
       { status: 500 },
     );
   }
+
+  return NextResponse.json({
+    received: true,
+    fulfilled: successes,
+  });
+}
+
+function groupByProvider(
+  items: FulfillmentLineItem[],
+): Map<ProviderName, FulfillmentLineItem[]> {
+  const groups = new Map<ProviderName, FulfillmentLineItem[]>();
+  for (const item of items) {
+    const existing = groups.get(item.product.provider);
+    if (existing) {
+      existing.push(item);
+    } else {
+      groups.set(item.product.provider, [item]);
+    }
+  }
+  return groups;
 }

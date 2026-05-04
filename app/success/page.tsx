@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { ClearCart } from "@/components/ClearCart";
 import { buildMetadata } from "@/lib/seo";
 
 export const metadata = buildMetadata({
@@ -10,6 +11,7 @@ export const metadata = buildMetadata({
 export default function SuccessPage() {
   return (
     <section className="container-tight py-24 text-center">
+      <ClearCart />
       <p className="label">Drop received</p>
       <h1 className="mt-3 font-display text-4xl font-semibold tracking-tight">
         Order placed.
