@@ -1,0 +1,37 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+html,
+body {
+  background: theme(colors.paper);
+  color: theme(colors.ink);
+  font-family: theme(fontFamily.display);
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  text-underline-offset: 3px;
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center justify-center rounded-md px-4 py-2 text-sm font-medium transition;
+  }
+  .btn-primary {
+    @apply btn bg-ink text-paper hover:bg-accent hover:text-ink;
+  }
+  .btn-ghost {
+    @apply btn border border-ink/20 text-ink hover:border-ink hover:bg-ink hover:text-paper;
+  }
+  .container-tight {
+    @apply mx-auto w-full max-w-6xl px-4;
+  }
+  .label {
+    @apply font-mono text-xs uppercase tracking-widest text-muted;
+  }
+}
